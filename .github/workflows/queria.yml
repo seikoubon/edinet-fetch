@@ -1,0 +1,31 @@
+name: Queria financial data
+on: workflow_dispatch
+permissions:
+  contents: read
+concurrency:
+  group: queria-financial-data
+  cancel-in-progress: false
+jobs:
+  fetch:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check duckdb==2.0.0 boto3==1.44.3
+      - name: Extract Queria tables
+        run: python queria.py extract "$RUNNER_TEMP/queria"
+      - name: Save to private R2
+        env:
+          SWING_S3_BUCKET: ${{ secrets.SWING_S3_BUCKET }}
+          SWING_S3_ENDPOINT: ${{ secrets.SWING_S3_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: 'true'
+        run: python queria.py publish "$RUNNER_TEMP/queria"
