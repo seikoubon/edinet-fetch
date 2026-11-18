@@ -1,0 +1,47 @@
+name: EDINET download
+on:
+  workflow_dispatch:
+    inputs:
+      max_docs:
+        description: Maximum number of new filings
+        type: number
+        default: 500
+      max_days:
+        description: Maximum number of additional historical listing dates
+        type: number
+        default: 100
+      minutes:
+        description: Acquisition time budget in minutes
+        type: number
+        default: 25
+permissions:
+  contents: read
+concurrency:
+  group: edinet-download
+  cancel-in-progress: false
+jobs:
+  download:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Download new archives to R2
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          SWING_S3_BUCKET: ${{ secrets.SWING_S3_BUCKET }}
+          SWING_S3_ENDPOINT: ${{ secrets.SWING_S3_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: 'true'
+          MAX_DOCS: ${{ inputs.max_docs }}
+          MAX_DAYS: ${{ inputs.max_days }}
+          MINUTES: ${{ inputs.minutes }}
+        run: python download.py --max-docs "$MAX_DOCS" --max-days "$MAX_DAYS" --minutes "$MINUTES"
