@@ -48,9 +48,10 @@ def provider_status(body):
         return None
     if not isinstance(payload, dict):
         return None
-    metadata = payload.get("metadata")
+    fields = {k.lower(): v for k, v in payload.items()}
+    metadata = fields.get("metadata")
     nested = metadata.get("status") if isinstance(metadata, dict) else None
-    for value in (nested, payload.get("statusCode"), payload.get("status")):
+    for value in (nested, fields.get("statuscode"), fields.get("status")):
         if re.fullmatch(r"[1-5][0-9]{2}", str(value)):
             return int(value)
     return None
