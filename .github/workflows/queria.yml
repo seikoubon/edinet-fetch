@@ -1,5 +1,8 @@
 name: Queria financial data
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '37 0 * * 6' # 土曜日 09:37 JST
 permissions:
   contents: read
 concurrency:
