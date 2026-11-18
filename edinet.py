@@ -36,8 +36,29 @@ class APIError(RuntimeError):
     """Safe diagnostic: never includes URLs, request bodies or API keys."""
 
 
+class ProviderResponseError(APIError):
+    """A response affecting the run, rather than evidence against any one filing."""
+
+
+def provider_status(body):
+    """Extract an HTTP-style numeric status only; never expose the provider body."""
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    metadata = payload.get("metadata")
+    nested = metadata.get("status") if isinstance(metadata, dict) else None
+    for value in (nested, payload.get("statusCode"), payload.get("status")):
+        if re.fullmatch(r"[1-5][0-9]{2}", str(value)):
+            return int(value)
+    return None
+
+
 class Client:
     def __init__(self, key, transport=None, interval=2.0, deadline=None):
+        key = (key or "").strip()
         if not key:
             raise APIError("missing_edinet_key")
         self.key, self.interval, self.requests, self.last = key, interval, 0, 0.0
@@ -115,7 +136,12 @@ class Client:
         if not re.fullmatch(r"S[0-9A-Z]{7}", doc_id):
             raise APIError("invalid_document_id")
         body = self.get("/documents/" + doc_id, {"type": typ})
-        checked_zip(body)
+        if not zipfile.is_zipfile(io.BytesIO(body)):
+            status = provider_status(body)
+            if status in {404, 410}:
+                raise APIError(f"http_{status}")
+            raise ProviderResponseError(f"archive_response_{status or 'not_zip'}")
+        checked_zip(body).close()
         return body
 
 

@@ -19,6 +19,7 @@ from edinet import (
     APIError,
     Client,
     Lake,
+    ProviderResponseError,
     eligible,
 )
 from storage import Remote
@@ -282,13 +283,13 @@ class Controller:
             return False
 
     def process(self, work, limit, deadline=None):
-        count = 0
+        attempts = 0
         for entry in work:
             m = entry["metadata"]
             doc = m["docID"]
             if (
                 time.monotonic() > min(deadline or self.deadline, self.deadline)
-                or count >= limit
+                or attempts >= limit
             ):
                 break
             signature = digest(canonical(m))
@@ -302,9 +303,12 @@ class Controller:
             old = self.a["doc_outcomes"].get(doc, {})
             if not can_attempt(old, signature):
                 continue
+            attempts += 1
             try:
                 archive, _ = self.lake.download_archive(self.client, m, signature)
                 self.changes.update((archive["path"], archive["metadata_path"]))
+            except ProviderResponseError:
+                raise
             except (
                 APIError,
                 ValueError,
@@ -324,11 +328,10 @@ class Controller:
                     self.outage = True
                     break
                 continue
-            count += 1
             self.docs += 1
             self.a["doc_outcomes"].pop(doc, None)
             self.checkpoint()
-        return count
+        return attempts
 
     def backfill(self, entries, max_docs, max_days):
         if self.a["phase"] == "daily":
@@ -418,6 +421,9 @@ if __name__ == "__main__":
         parser.error("Use 1–1000 documents/days and 1–80 minutes.")
     try:
         status = download_history(args.max_docs, args.max_days, args.minutes)
+    except ProviderResponseError as exc:
+        print("EDINET rejected the archive request:", str(exc), flush=True)
+        status = 1
     except Exception as exc:
         # Network exceptions can include authenticated URLs. Never print them in public logs.
         print("Download failed:", type(exc).__name__, flush=True)
