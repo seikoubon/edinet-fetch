@@ -63,19 +63,19 @@ def extract(root, end):
                 FROM edinet.main.mart_{table} AS t
                 JOIN filing_keys AS d USING (doc_id)
             """
-        seen, unique = db.execute("SELECT count(*), count(DISTINCT doc_id) FROM selected_docs").fetchone()
+        seen, unique = db.execute("SELECT count(*), count(DISTINCT doc_id) FROM selected_docs").fetchall()[0]
         print(f"Filing index: {seen} rows, {unique} distinct filings", flush=True)
         if not unique:
             raise ValueError("No filings in the selected interval")
         for name, sql in queries.items():
             path = root / (name + ".parquet")
             db.sql(sql).write_parquet(str(path), compression="zstd")
-            count, docs = db.execute("SELECT count(*), count(DISTINCT doc_id) FROM read_parquet(?)", [str(path)]).fetchone()
+            count, docs = db.execute("SELECT count(*), count(DISTINCT doc_id) FROM read_parquet(?)", [str(path)]).fetchall()[0]
             if not count:
                 raise ValueError(f"No rows for {name}")
             files[path.name] = {"rows": count, "documents": docs, "bytes": path.stat().st_size, "sha256": digest(path.read_bytes())}
             print(f"{name}: {count} rows, {docs} filings", flush=True)
-        first, last, companies = db.execute("SELECT min(submit_date), max(submit_date), count(DISTINCT sec_code) FROM selected_docs").fetchone()
+        first, last, companies = db.execute("SELECT min(submit_date), max(submit_date), count(DISTINCT sec_code) FROM selected_docs").fetchall()[0]
     manifest = {
         "origin": "金融庁 EDINET", "processor": "Queria", "dataset": "https://queria.io/datasets/queria/edinet",
         "catalog": url, "updated_at": meta["updated_at"], "observed_at": observed,
