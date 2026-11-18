@@ -1,0 +1,112 @@
+name: Restore first-run retry state and validate one download
+on:
+  push:
+    branches: ['repair/first-run-20261118']
+    paths: ['.github/workflows/first-run-recovery.yml']
+permissions:
+  contents: read
+concurrency:
+  group: edinet-download
+  cancel-in-progress: false
+jobs:
+  recover:
+    if: github.event.before == 'e6c9d41f69b66e314fa5103dec93f9eb7dd7cedf'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip -q install -r requirements.txt
+      - name: Recover only verified retry entries and fetch one filing
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          SWING_S3_BUCKET: ${{ secrets.SWING_S3_BUCKET }}
+          SWING_S3_ENDPOINT: ${{ secrets.SWING_S3_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from tempfile import TemporaryDirectory
+          import json, gzip, sys, time, os
+          from storage import Remote
+          from edinet import Lake, Client, ProviderResponseError, provider_status
+          from common import digest
+          from download import download_history
+          
+          def restore():
+              start = datetime(2026, 11, 18, 1, 0, 17, tzinfo=timezone.utc)
+              end = datetime(2026, 11, 18, 1, 2, 49, tzinfo=timezone.utc)
+              with TemporaryDirectory() as root:
+                  remote = Remote(root)
+                  remote.open()
+                  lake = Lake(root)
+                  outcomes = lake.state["automation"]["doc_outcomes"]
+                  affected = [doc for doc, rec in outcomes.items() if rec["code"] == "ValueError" and
+                              start <= datetime.fromisoformat(rec["at"]) <= end]
+                  if len(affected) != 290:
+                      raise RuntimeError("incident record count mismatch")
+                  pages = remote.s3.get_paginator("list_objects_v2").paginate(Bucket=remote.bucket, Prefix=remote.key("snapshots/"))
+                  before = max((e for page in pages for e in page.get("Contents", []) if e["LastModified"] < start),
+                               key=lambda e:e["LastModified"])
+                  def read(key, sha):
+                      data = remote.s3.get_object(Bucket=remote.bucket, Key=key)["Body"].read()
+                      if digest(data) != sha:
+                          raise ValueError("integrity mismatch")
+                      return data
+                  key = before["Key"]
+                  manifest = json.loads(read(key, key.rsplit("/",1)[1].split(".")[0]))["files"]
+                  statepath = "state/checkpoint.json.gz"
+                  if {k:v for k,v in manifest.items() if k!=statepath} != {k:v for k,v in remote.baseline.items() if k!=statepath}:
+                      raise RuntimeError("intervening changes outside incident scope")
+                  sha = manifest[statepath]
+                  old = json.loads(gzip.decompress(read(remote.key("blobs/"+sha), sha)))
+                  previous = old["automation"]["doc_outcomes"]
+                  for doc in affected:
+                      if doc in previous:
+                          outcomes[doc] = previous[doc]
+                      else:
+                          outcomes.pop(doc)
+                  if lake.state != old:
+                      raise RuntimeError("state differs outside verified incident records")
+                  lake.save()
+                  remote.push(changed_paths={statepath})
+                  print("Recovered previous checkpoint contents; records restored:", len(affected), flush=True)
+          
+          def diagnose():
+              c = Client(os.environ["EDINET_API_KEY"].strip(), deadline=time.monotonic()+20)
+              try:
+                  data = c.get("/documents.json", {"date":"2026-11-13","type":2})
+                  status=provider_status(data)
+                  if status is None:
+                      try:
+                          msg=json.loads(data)
+                          if isinstance(msg,dict):
+                              for k,v in msg.items():
+                                  if k.lower() in ("status","statuscode") and str(v).isdigit() and len(str(v))==3:
+                                      status=int(v)
+                      except ValueError:
+                          pass
+                  kind="json" if data.lstrip().startswith(b"{") else "html" if b"<html" in data[:300].lower() else "other"
+                  print("Listing diagnostic:",kind,status,flush=True)
+              finally:
+                  c.http.close()
+          
+          try:
+              restore()
+              try:
+                  rc=download_history(1,1,3)
+              except ProviderResponseError as e:
+                  print("EDINET archive response:",str(e),flush=True)
+                  diagnose()
+                  rc=1
+          except Exception as e:
+              print("Recovery/test error category:", type(e).__name__,flush=True)
+              rc=1
+          sys.exit(rc)
+          PY
