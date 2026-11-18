@@ -45,17 +45,28 @@ def extract(root, end):
               AND doc_type_code IN ('120','130','140','150','160','170')
               AND nullif(trim(sec_code),'') IS NOT NULL
         """, [START, end])
+        # Several source listings can refer to the same filing. Preserve all of
+        # them, but join each financial observation to the filing only once.
+        db.execute("""
+            CREATE TEMP TABLE filing_keys AS
+            SELECT doc_id,
+                   CASE WHEN count(DISTINCT submit_datetime) = 1 THEN min(submit_datetime) END AS submit_datetime,
+                   CASE WHEN count(DISTINCT sec_code) = 1 THEN min(sec_code) END AS sec_code,
+                   CASE WHEN count(DISTINCT doc_type_code) = 1 THEN min(doc_type_code) END AS doc_type_code
+            FROM selected_docs WHERE doc_id IS NOT NULL GROUP BY doc_id
+        """)
         queries = {"documents": "SELECT * FROM selected_docs"}
         for table, columns in TABLES.items():
             queries[table] = f"""
                 SELECT {columns}, d.submit_datetime AS filing_submitted_at,
                        d.sec_code AS filing_sec_code, d.doc_type_code AS filing_type
                 FROM edinet.main.mart_{table} AS t
-                JOIN selected_docs AS d USING (doc_id)
+                JOIN filing_keys AS d USING (doc_id)
             """
         seen, unique = db.execute("SELECT count(*), count(DISTINCT doc_id) FROM selected_docs").fetchone()
-        if not seen or seen != unique:
-            raise ValueError("Empty or nonunique filing index")
+        print(f"Filing index: {seen} rows, {unique} distinct filings", flush=True)
+        if not unique:
+            raise ValueError("No filings in the selected interval")
         for name, sql in queries.items():
             path = root / (name + ".parquet")
             db.sql(sql).write_parquet(str(path), compression="zstd")
